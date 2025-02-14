@@ -12,6 +12,13 @@ end
 % Segment MRI
 segmaskName = 'segmask.nii';
 
+% Index of the tissue in segmented MRI data
+settings.GM_index = 1;
+settings.WM_index = 2;
+settings.CSF_index = 3;
+settings.default_material = 'GM'; % GM, WM or CSF
+settings.MRI_data_name = [outputPaths.outputDir, filesep, segmaskName];
+
 if options.native
     anchorImage = options.subj.preopAnat.(options.subj.AnchorModality).coreg;
 end 
@@ -62,13 +69,54 @@ switch settings.butenko_segmAlg
             c2.img(c3.img) = 0;
             c1.img(c2.img | c3.img) = 0;
             c1.img = c1.img + c2.img*2 + c3.img*3;
+
             c1.fname = segMaskPath;
             c1.dt = [2 0]; % unit8 according to spm_type
             c1.descrip = 'Tissue 1 + 2 + 3';
             c1.pinfo(1:2) = [1,0]; % uint8 is enough for output values, no need for scaling
+
             ea_write_nii(c1);
+        elseif options.native
+            % load already created C123 and check if native
+            c1 = ea_load_nii(segMaskPath);
         end
-        copyfile(segMaskPath, [outputPaths.outputDir, filesep, segmaskName]);
+
+        if options.native
+            % volume sanity check (at least 100 cm3 for WM and GM)
+            GM_vol = length(find(c1.img == settings.GM_index)) * c1.voxsize(1,1)*c1.voxsize(1,2)*c1.voxsize(1,3) * 0.001; 
+            WM_vol = length(find(c1.img == settings.WM_index)) * c1.voxsize(1,1)*c1.voxsize(1,2)*c1.voxsize(1,3) * 0.001; 
+
+            % TBD: write a smarter auto-check
+            if WM_vol < 100.0 || GM_vol < 100.0
+                warningMsg = sprintf("Brain segmentation with SPM failed for sub-%s", options.subj.subjId);
+                ea_warndlg(warningMsg);
+                % check if atropos segmentation was already done 
+                % TBD: we can store atropos segmask_raw in coregistration
+                % instead of stim folder
+                if ~isfile([ea_path_helper(outputPaths.outputDir),filesep,'segmask_raw_atropos.nii'])
+                    env = ea_conda_env('Lead-DBS');
+                    if ~env.is_up_to_date
+                        env.force_create;
+                    end
+                    %env.system('pip3 install antspyx')
+                    env.system(['python ', ea_getearoot, '/ext_libs/OSS-DBS/genvat_butenko/atropos_segm.py ', ea_path_helper([anchorImageDir,anchorImageName]), ' ', ea_path_helper(outputPaths.outputDir)])
+                end
+                env = ea_conda_env('OSS-DBSv2');
+                
+                % ea_atropos2segmask will save segmask.nii in the stim folder
+                % always convert to make sure the chosen algorithm was used
+                ea_atropos2segmask([ea_path_helper(outputPaths.outputDir),filesep,'segmask_raw_atropos.nii'], ea_path_helper(options.subj.AnchorModality));
+            else
+                % always copy to make sure the chosen algorithm was used
+                copyfile(segMaskPath, [outputPaths.outputDir, filesep, segmaskName]);
+            end
+        else
+            % for MNI, copy without check
+            % always copy to make sure the chosen algorithm was used
+            copyfile(segMaskPath, [outputPaths.outputDir, filesep, segmaskName]);
+        end
+
+
     case 'Atlas Based'
 
         % always overwrite in this case
@@ -88,17 +136,32 @@ switch settings.butenko_segmAlg
             atlas_gm_mask_path = [ea_space,filesep,'atlases',filesep,options.atlasset,filesep,'gm_mask.nii.gz'];
             ea_convert_atlas2segmask(atlas_gm_mask_path, segMaskPath, 0.5)
         end
-    case'SynthSeg'
-        ea_warndlg("SynthSeg segmentations are not supported yet")
-        return
-        %SynthSeg_segmask_image = ea_smart_BIDS_function_to_find_SynthSeg;
-        %ea_convert_synthSeg2segmask(SynthSeg_segmask_image, segmask_output);
+    case 'SynthSeg'
+        % IMPORTANT: SynthSeg is not properly trained for typical PD brain
+        % atrophies! This might lead to both segmentation and normalization
+        % errors!
+
+        if options.native
+            [anchorImageDir, anchorImageName] = fileparts(anchorImage);
+            ImageDir = [anchorImageDir, filesep];
+            ImageName = [anchorImageName, '.nii'];
+        else
+            normImage = options.subj.preopAnat.(options.subj.AnchorModality).norm;
+            [normImageDir, normImageName] = fileparts(normImage);
+            ImageDir = [normImageDir, filesep];
+            ImageName = [normImageName, '.nii'];
+        end
+
+        segMaskPath = [ImageDir, ImageName(1:end-4),'-synthseg_raw.nii'];
+        if ~isfile(segMaskPath)
+            env = ea_conda_env('SynthSeg');
+            if ~env.is_up_to_date
+                env.force_create;
+            end
+            ea_synthseg([ImageDir,ImageName], segMaskPath)
+        end
+
+        % always convert to make sure the chosen algorithm was used
+        ea_convert_synthSeg2segmask((segMaskPath), ([outputPaths.outputDir, filesep, segmaskName]));
+        env = ea_conda_env('OSS-DBSv2');
 end
-
-% Index of the tissue in segmented MRI data
-settings.GM_index = 1;
-settings.WM_index = 2;
-settings.CSF_index = 3;
-settings.default_material = 'GM'; % GM, WM or CSF
-
-settings.MRI_data_name = [outputPaths.outputDir, filesep, segmaskName];

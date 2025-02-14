@@ -145,7 +145,7 @@ end
 
 if ~isempty(varargin) && isfile(GetFullPath(varargin{1})) % Path to group analysis file provided as input
     groupFilePath = GetFullPath(varargin{1});
-    load(groupFilePath, 'M');
+    M = ea_checkStimParams(groupFilePath);
     M.root = [fileparts(groupFilePath), filesep];
     set(handles.groupdir_choosebox, 'String', fileparts(groupFilePath));
     set(handles.groupdir_choosebox, 'TooltipString', fileparts(groupFilePath));
@@ -244,7 +244,7 @@ if strcmp(target, 'groupDir')
             end
             % Group analysis file within dataset folder
             groupdir = fileparts(folders{1});
-            load(folders{1}, 'M');
+            M = ea_checkStimParams(folders{1});
 
             datasetFolder = regexp(groupdir, ['(.*)(?=\', filesep, 'derivatives\', filesep, 'leadgroup)'], 'match', 'once');
             if isfile(fullfile(datasetFolder, 'miniset.json'))
@@ -258,7 +258,7 @@ if strcmp(target, 'groupDir')
         elseif ~isempty(regexp(folders{1}, ['\', filesep, 'dataset-[^\W_]+_analysis-[^\W_]+\.mat$'], 'match', 'once'))
             % Orphan group analysis file, will create proper dataset folder
             [groupdir, analysisFile] = ea_genDatasetFromGroupAnalysis(folders{1});
-            load(analysisFile, 'M');
+            M = ea_checkStimParams(analysisFile);
         else
             ea_error('Not a Lead Group Analysis file!', simpleStack = 1);
         end
@@ -295,7 +295,7 @@ if strcmp(target, 'groupDir')
             analysisFile = ea_genGroupAnalysisFile(folders{1});
         end
         groupdir = fileparts(analysisFile);
-        load(analysisFile, 'M');
+        M = ea_checkStimParams(analysisFile);
 
         datasetFolder = regexp(groupdir, ['(.*)(?=\', filesep, 'derivatives\', filesep, 'leadgroup)'], 'match', 'once');
         if isfile(fullfile(datasetFolder, 'miniset.json'))
@@ -343,12 +343,26 @@ else
         M.patient.group=[M.patient.group; ones(length(folders),1)];
         options=ea_setopts_local(handles);
 
-        tS=ea_initializeS(['gs_',M.guid],options,handles);
+        for i=1:length(folders)
+            [~, subjPrefix] = fileparts(folders{i});
+            load(fullfile(folders{i}, 'prefs', [subjPrefix '_desc-uiprefs.mat']), 'elmodel');
+            options.elmodel = elmodel;
+            options = ea_resolve_elspec(options);
+            tS(i) = ea_initializeS(['gs_',M.guid], options, handles);
+        end
+
         if isempty(M.S)
-            M=rmfield(M,'S');
-            M.S(1:length(folders))=tS;
+            M = rmfield(M,'S');
+            M.S = tS;
         else
-            M.S(end+1:end+length(folders))=tS;
+            try
+                M.S(end+1:end+length(folders)) = tS;
+            catch ME
+                if ME.identifier == "MATLAB:heterogeneousStrucAssignment"
+                    diffFields = strjoin(setdiff(fieldnames(M.S), fieldnames(tS))', ', ');
+                    ea_error(sprintf('Incompatibile S fields found: %s.\n', diffFields), showdlg=0, simpleStack=1);
+                end
+            end
         end
         setappdata(handles.leadfigure, 'M', M);
         ea_refresh_lg(handles);
@@ -509,18 +523,25 @@ M.patient.list=[M.patient.list;folders'];
 M.patient.group=[M.patient.group;ones(length(folders),1)];
 options=ea_setopts_local(handles);
 
-tS=ea_initializeS(['gs_',M.guid],options,handles);
+for i=1:length(folders)
+    [~, subjPrefix] = fileparts(folders{i});
+    load(fullfile(folders{i}, 'prefs', [subjPrefix '_desc-uiprefs.mat']), 'elmodel');
+    options.elmodel = elmodel;
+    options = ea_resolve_elspec(options);
+    tS(i) = ea_initializeS(['gs_',M.guid], options, handles);
+end
 
 if isempty(M.S)
-    M=rmfield(M,'S');
-    M.S(1:length(folders))=tS;
+    M = rmfield(M,'S');
+    M.S = tS;
 else
     try
-        M.S(end+1:end+length(folders))=tS;
-    catch
-        tS.volume=[0,0];
-        tS.sources=[1:4];
-        M.S(end+1:end+length(folders))=tS;
+        M.S(end+1:end+length(folders)) = tS;
+    catch ME
+        if ME.identifier == "MATLAB:heterogeneousStrucAssignment"
+            diffFields = strjoin(setdiff(fieldnames(M.S), fieldnames(tS))', ', ');
+            ea_error(sprintf('Incompatibile S fields found: %s.\n', diffFields), showdlg=0, simpleStack=1);
+        end
     end
 end
 
@@ -1015,7 +1036,6 @@ M=getappdata(gcf,'M');
 
 % set options
 options=ea_setopts_local(handles);
-%stimname=ea_detstimname(options);
 
 options.groupmode = 1;
 options.groupid = M.guid;
@@ -1027,25 +1047,18 @@ else
     options.stimSetMode = 0;
 end
 
-% determine if fMRI or dMRI
-mods=get(handles.fiberspopup,'String');
-mod=mods{get(handles.fiberspopup,'Value')};
-switch mod
-    case {'Patient''s fiber tracts', 'Patient''s fMRI time courses'}
-        fibersfile=mod;
-    case 'Do not calculate connectivity stats'
-    otherwise % load fibertracts once and for all subs here.
-        [fibersfile.fibers,fibersfile.fibersidx]=ea_loadfibertracts([ea_getconnectomebase('dmri'),mod,filesep,'data.mat']);
+selection = ea_groupselectorwholelist(M.ui.listselect,M.patient.list);
+
+% determine connectome chosen from the GUI
+selectedConn = handles.fiberspopup.String{handles.fiberspopup.Value};
+if ~ismember(selectedConn, {'Patient''s fiber tracts', 'Patient''s fMRI time courses', 'Do not calculate connectivity stats'})
+    % load fibertracts once and for all subs here.
+    [selectedConn.fibers, selectedConn.fibersidx] = ea_loadfibertracts([ea_getconnectomebase('dmri'), selectedConn, filesep, 'data.mat']);
 end
 
-[selection]=ea_groupselectorwholelist(M.ui.listselect,M.patient.list);
+selectedParc = handles.labelpopup.String{handles.labelpopup.Value};
 
-
-parcs=get(handles.labelpopup,'String');
-selectedparc=parcs{get(handles.labelpopup,'Value')};
-
-
-ea_calc_biophysical_lg(M,options,selection,mod,selectedparc,handles);
+ea_calc_biophysical_lg(M, options, selection, selectedConn, selectedParc, handles);
 
 
 %% processing done here.
@@ -1256,7 +1269,7 @@ ea_refresh_lg(handles);
 % % eventdata  reserved - to be defined in a future version of MATLAB
 % % handles    structure with handles and user data (see GUIDATA)
 % M=getappdata(gcf,'M');
-% 
+%
 % % try
 % %     uicell=inputdlg('Enter Variable name for Voltage-Parameters','Enter Stimulation Settings...',1);
 % %     uidata.U=evalin('base',uicell{1});
@@ -1271,13 +1284,13 @@ ea_refresh_lg(handles);
 % %     warning('Stim-Params could not be evaluated. Please Try again.');
 % %     return
 % % end
-% 
+%
 % options = ea_setopts_local(handles);
 % options.leadprod = 'group';
 % options.groupid = M.guid;
 % options.native = 0;
 % ea_refresh_lg(handles);
-% 
+%
 % ea_stimparams(M.elstruct, handles.leadfigure, options);
 
 % --- Executes on button press in setstimparamsbutton.
@@ -1294,71 +1307,77 @@ choice = questdlg('Select a programmer:', ...
 % Handle user's response
 switch choice
     case 'Old Programmer'
-        % Execute Option 1: Your existing code or modifications
         M = getappdata(handles.leadfigure, 'M');
-        
+
         options = ea_setopts_local(handles);
         options.leadprod = 'group';
         options.groupid = M.guid;
         options.native = 0;
         ea_refresh_lg(handles);
-        
+
         ea_stimparams(M.elstruct, handles.leadfigure, options);
-        
+
     case 'New Programmer'
-        % Execute Option 2: Another action or modifications
-        % Add your code for Option 2 here
         M = getappdata(handles.leadfigure, 'M');
         options = ea_setopts_local(handles);
         options.leadprod = 'group';
         options.groupid = M.guid;
         options.native = 0;
         ea_refresh_lg(handles);
-        [file_path, releaseDir, status_path] = ea_input_programmer_group(options, M);
-        disp('Option 2 selected. Performing alternative action.');
+
+        % Temporary solution to reload M
+        currentM = load(ea_getGroupAnalysisFile(M.root));
+        M.S = currentM.M.S;
+
+        [file_path, releaseDir, input_file_path] = ea_input_programmer_group(options, M);
         currentOS = ea_getarch;
-        if exist(releaseDir, 'Dir')
-        %     % Test MAC - will need to test on windows
-            mac64Dir = strcat(releaseDir, '/mac-arm64');
-            macDir = strcat(releaseDir, '/mac');
-        
-            if (currentOS == "maca64")
-                zipDir = strcat(mac64Dir, '/LeadDbsProgrammer-4.6.0-arm64-mac.zip');
-                appDir = strcat(mac64Dir, '/LeadDbsProgrammer.app/Contents/MacOS/LeadDbsProgrammer');
-                testDir = strcat(mac64Dir, '/LeadDbsProgrammer.app');
-                if ~exist(testDir)
-                    unzip(zipDir, mac64Dir);
+
+        if isfolder(releaseDir)
+            zipFile = fullfile(releaseDir, ['LeadDBSProgrammer_', currentOS, '.zip']);
+            if ismac
+                appFile = fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer.app', 'Contents', 'MacOS', 'LeadDBSProgrammer');
+                if ~isfile(appFile)
+                    unzip(zipFile, fullfile(ea_prefsdir, 'ProgrammerGroup'));
+                    system(['xattr -cr ', ea_path_helper(fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer.app'))]);
+                    savejson('', struct('LeadDBS_Path', ea_getearoot), fullfile(ea_prefsdir, 'ProgrammerGroup', 'Preferences.json'));
+                end
+            elseif isunix
+                appFile = fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer', 'LeadDBSProgrammer');
+                if ~isfile(appFile)
+                    unzip(zipFile, fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer'));
+                    savejson('', struct('LeadDBS_Path', ea_getearoot), fullfile(ea_prefsdir, 'ProgrammerGroup', 'Preferences.json'));
+                end
+            else
+                appFile = fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer', 'LeadDBSProgrammer.exe');
+                if ~isfile(appFile)
+                    unzip(zipFile, fullfile(ea_prefsdir, 'ProgrammerGroup', 'LeadDBSProgrammer'));
+                    savejson('', struct('LeadDBS_Path', ea_getearoot), fullfile(ea_prefsdir, 'ProgrammerGroup', 'Preferences.json'));
                 end
             end
-        
-            if (currentOS == "maci64")
-                zipDir = strcat(mac64Dir, '/LeadDbsProgrammer-4.6.0-mac.zip');
-                appDir = strcat(mac64Dir, '/LeadDbsProgrammer.app/Contents/MacOS/LeadDbsProgrammer');
-                testDir = strcat(mac64Dir, '/LeadDbsProgrammer.app');
-                if ~exist(testDir)
-                    unzip(zipDir, macDir);
-                end
+
+            system([appFile, ' ', ea_path_helper(input_file_path)]);
+
+            % Loading output from programmer
+            importedS = loadjson(file_path);
+
+            ea_delete(fullfile(M.root, 'data.json'));
+            ea_delete(fullfile(M.root, 'inputData.json'));
+            if isfield(importedS, 'message')
+                disp([importedS.message]);
+                return;
             end
-                system(appDir);
-                new_data = fileread(file_path);
-                fid = fopen(file_path, 'w');
-                fclose(fid);
-                importedS = jsondecode(new_data);
-                fields = fieldnames(importedS);
-                tmpM = struct();
-                % Loop through each field
-                for i = 1:length(fields)
-                    fieldName = fields{i};
-                    fieldData = importedS.(fieldName);
-                    [S] = ea_process_programmer_group(fieldData);
-                    tmpM.S(i) = S;
-                    % Now you can work with fieldData
-                    disp(['Processing data for field: ' fieldName]);
-                end
-                M.S = tmpM.S;
-                setappdata(handles.leadfigure, 'M', M);
+
+            tmpM = struct();
+            for i = 1:length(importedS)
+                [S] = ea_process_programmer_group(cell2mat(importedS(i)));
+                tmpM.S(i) = S;
+            end
+            M.S = tmpM.S;
+            setappdata(handles.leadfigure, 'M', M);
+
+            save(ea_getGroupAnalysisFile(M.root), 'M');
         end
-        
+
     otherwise
         % User canceled the dialog or closed it
         disp('Dialog canceled or closed.');

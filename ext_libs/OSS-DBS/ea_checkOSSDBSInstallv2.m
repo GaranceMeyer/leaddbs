@@ -19,7 +19,7 @@ if ~env.is_up_to_date
 end
 
 % Check NEURON install
-version = '8.2.4';
+version = '8.2.6';
 if ispc
     [status, cmdout] = system('neuron --version');
     if status || ~contains(cmdout, version)
@@ -27,7 +27,7 @@ if ispc
         installer = fullfile(ea_prefsdir, 'temp', ['nrn-', version, '.exe']);
         ea_mkdir(fileparts(installer));
         try
-            websave(installer, ['https://github.com/neuronsimulator/nrn/releases/download/', version, '/nrn-', version, '.w64-mingw-py-37-38-39-310-311-setup.exe']);
+            websave(installer, ['https://github.com/neuronsimulator/nrn/releases/download/', version, '/nrn-', version, '.w64-mingw-py-38-39-310-311-312-setup.exe']);
         catch ME
             ea_error(['Failed to download NEURON installer for Windows:\n', ME.message], simpleStack=true);
         end

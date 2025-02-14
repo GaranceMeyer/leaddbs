@@ -228,8 +228,7 @@ if ~isempty(transform)
                 XYZ_src_mm(2,:)=-XYZ_src_mm(2,:);
 
                 % apply transform, need transpose becuase ANTs prefer N*3 like row vector
-                subjDir = fileparts(fileparts(fileparts(GetFullPath(transform)))); % Subj folder (BIDS dataset)
-                XYZ_dest_mm = ea_ants_apply_transforms_to_points(subjDir, XYZ_src_mm(1:3,:)', useinverse, transform)';
+                XYZ_dest_mm = ea_antspy_apply_transforms_to_points(XYZ_src_mm(1:3,:)', transform, useinverse)';
 
                 % LPS to RAS, restore to RAS coords
                 XYZ_dest_mm(1,:)=-XYZ_dest_mm(1,:);
@@ -282,7 +281,7 @@ if ~isempty(transform)
         json = loadjson(options.subj.norm.log.method);
         normMethod = upper(json.method);
 
-        if contains(normMethod, {'ANTS', 'EASYREG', 'SPM'})
+        if contains(normMethod, {'ANTS', 'EASYREG', 'SYNTHMORPH', 'SPM'})
             % Convert SPM deformation field to ITK format when necessary
             if contains(normMethod, 'SPM')
                 ea_convert_spm_warps(options.subj);
@@ -303,7 +302,7 @@ if ~isempty(transform)
 
             % apply transform, need transpose becuase ANTs prefer N*3
             % like row vector
-            XYZ_dest_mm=ea_ants_apply_transforms_to_points(subjDir,XYZ_src_mm(1:3,:)',useinverse)';
+            XYZ_dest_mm = ea_antspy_apply_transforms_to_points(XYZ_src_mm(1:3,:)', subjDir, useinverse)';
 
             % LPS to RAS, restore to RAS coords
             XYZ_dest_mm(1,:)=-XYZ_dest_mm(1,:);
@@ -339,7 +338,7 @@ if ~isempty(transform)
         %     else
         %         transform = [options.subj.norm.transform.forwardBaseName, 'spm.nii'];
         %     end
-        % 
+        %
         %     XYZ_dest_mm = srcvx2destmm_deform(XYZ_src_vx, transform);
         else
             error('Normalization method not recognizable!');
@@ -363,7 +362,7 @@ if ~isempty(transform)
 
         switch normMethod
 
-            case {'ANTS', 'EASYREG', 'SPM'} % ANTs or SPM used
+            case {'ANTS', 'EASYREG', 'SYNTHMORPH', 'SPM'} % ANTs or SPM used
                 if nargin >= 6
                     useinverse = varargin{6};
                 else
@@ -379,7 +378,7 @@ if ~isempty(transform)
 
                 % apply transform, need transpose becuase ANTs prefer N*3
                 % like row vector
-                XYZ_dest_mm=ea_ants_apply_transforms_to_points([], XYZ_src_mm(1:3,:)', useinverse, transform)';
+                XYZ_dest_mm = ea_antspy_apply_transforms_to_points(XYZ_src_mm(1:3,:)', transform, useinverse)';
 
                 % LPS to RAS, restore to RAS coords
                 XYZ_dest_mm(1,:)=-XYZ_dest_mm(1,:);

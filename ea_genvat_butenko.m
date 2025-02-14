@@ -12,6 +12,7 @@ elseif nargin==3
 elseif nargin==1 && ischar(varargin{1}) % return name of method.
     varargout{1} = 'OSS-DBS (Butenko 2020)';
     varargout{2} = true; % Support directed lead
+    varargout{3} = true; % Support estimation in native space
     return
 end
 % get resultfig handle
@@ -26,7 +27,7 @@ timezone = time.TimeZone;
 setenv('TZ', timezone);
 
 % import settings from Lead-DBS GUI
-settings = ea_prepare_ossdbs(options);
+[settings,S] = ea_prepare_ossdbs(options,S);
 
 % some hardcoded parameters, can be added to GUI later
 prepFiles_cluster = 0; % set to 1 if you only want to prep files for cluster comp.
@@ -59,7 +60,7 @@ source_efields = cell(2,4);  % temp files to store results for each source
 source_vtas = cell(2,4);
 stimparams = struct();
 
-% multiple sources are not supported for PAM
+% check if multisource mode
 if any(nActiveSources > 1)
     if options.prefs.machine.vatsettings.butenko_calcPAM
         % ea_warndlg('MultiSource Mode is not supported for PAM!')
@@ -72,15 +73,17 @@ if any(nActiveSources > 1)
     end
     first_active_source = 1;  % check all sources
 else
-    first_active_source = find(~isnan(activeSources(1,:)),1,'first');
+    first_active_source_rh = find(~isnan(activeSources(1,:)),1,'first');
+    first_active_source_lh = find(~isnan(activeSources(2,:)),1,'first');
+    first_active_source = min([first_active_source_rh,first_active_source_lh]);
 end
 
 % if single source, we will run only one iteration
 for source_index = first_active_source:4
 
-    % get stim settings for particular source    
+    % get stim settings for particular source
     settings = ea_get_stimProtocol(options,S,settings,activeSources,source_index);
-    
+
     if settings.calcAxonActivation
         % will exit after the first source
         if true_VTA
@@ -89,7 +92,7 @@ for source_index = first_active_source:4
             fibersFound = [0,0];
             if ~isnan(activeSources(1,source_index))
                 settings = ea_switch2VATgrid(options,S,settings,0,outputPaths);
-                fibersFound(:,1) = 1; 
+                fibersFound(:,1) = 1;
             end
             if ~isnan(activeSources(2,source_index))
                 settings = ea_switch2VATgrid(options,S,settings,1,outputPaths);
@@ -101,18 +104,18 @@ for source_index = first_active_source:4
             [settings,fibersFound] = ea_prepare_fibers(options, S, settings, outputPaths,  source_index);
         end
     end
-    
+
     % Save settings for OSS-DBS
     if ~all(isnan(activeSources(:,source_index)))
         parameterFile = ea_save_ossdbs_settings(options, S, settings, outputPaths);
     end
-    
+
     if prepFiles_cluster == 1
         % now you can run OSS-DBS externally
         [varargout{1}, varargout{2}] = ea_exit_genvat_butenko();
         return
     end
-    
+
     % Iterate over hemispheres: 0 - rh , 1 - lh
     for side = 0:1
 
@@ -130,9 +133,9 @@ for source_index = first_active_source:4
 
         if ~multiSourceMode(side+1)
             % not relevant in this case, terminate after one iteration;
-            source_use_index = 5;  
+            source_use_index = 5;
         else
-            source_use_index = source_index; 
+            source_use_index = source_index;
         end
 
         % copy Current_protocols if generated externally
@@ -171,7 +174,7 @@ for source_index = first_active_source:4
             runStatusMultiSource(source_index,side+1) = 1;
             continue;
         end
-    
+
         % skip PAM if no fibers were preserved for the stim protocol
         if settings.calcAxonActivation && ~any(fibersFound(:,side+1))
             warning('off', 'backtrace');
@@ -181,9 +184,9 @@ for source_index = first_active_source:4
             runStatusMultiSource(source_index,side+1) = 1;
             continue;
         end
-    
+
         fprintf('\nRunning OSS-DBS for %s side stimulation...\n\n', sideStr);
-        
+
         if ~exist(outputPaths.HemiSimFolder,'dir')
             mkdir(outputPaths.HemiSimFolder)
         end
@@ -192,14 +195,22 @@ for source_index = first_active_source:4
         for i = 1:settings.N_samples  % mutiple samples if probablistic PAM is used, otherwise 1
 
             if settings.calcAxonActivation
-                if settings.prob_PAM
+                if settings.prob_PAM && (source_use_index == 1 || source_use_index == 5)
                     settings = ea_updatePAM_parameter(options,settings,outputPaths,i);
+                    if any(multiSourceMode)
+                        vatsettings = options.prefs.machine.vatsettings;
+                        pparam = vatsettings.butenko_probabilistic_parameter;
+                        copyfile([outputPaths.HemiSimFolder, filesep, pparam,'_samples.mat'], [outputPaths.outputDir, filesep, pparam,'_samples_',sideCode,'.mat'])
+                    end
+                elseif settings.prob_PAM
+                    % for other sources, load already sampled parameters
+                    settings = ea_load_prob_parameter(options, settings, outputPaths, sideCode, i);
                 end
-        
+
                 % clean-up
                 ea_delete([outputPaths.HemiSimFolder, filesep, 'Allocated_axons.h5']);
                 ea_delete([outputPaths.HemiSimFolder, filesep, 'Results', filesep,'oss_time_result*'])
-    
+
                 % allocate computational axons on fibers
                 %system(['python ', ea_getearoot, 'ext_libs/OSS-DBS/Axon_Processing/axon_allocation.py ', outputPaths.outputDir,' ', num2str(side), ' ', parameterFile]);
                 system(['prepareaxonmodel ',ea_path_helper(outputPaths.outputDir),' --hemi_side ',num2str(side),' --description_file ', ea_path_helper(parameterFile)]);
@@ -213,11 +224,11 @@ for source_index = first_active_source:4
 
             % run OSS-DBS
             [~, cmdout] = system(['ossdbs ', ea_path_helper(parameterFile_json)])
-            
+
             % detec error related to Bnd_Box
             if contains(cmdout, 'Bnd_Box is void')
                 disp ('Error "Bnd_Box is void" detected, increasing the dimensions ...');
-                
+
                 % increase the Bnd_Box dimensions
                 system(cell2mat(['python ' ea_regexpdir(ea_getearoot, 'BndBoxDimensionsEdits.py') ' ', ea_path_helper(parameterFile_json)]));
 
@@ -227,7 +238,15 @@ for source_index = first_active_source:4
 
             % prepare NEURON simulation
             if settings.calcAxonActivation
-    
+
+                if strcmp(settings.butenko_intersectStatus,'activated')
+                    % we additionally correct for the tissue push and
+                    % downscale the solution (equivalent of pulling VTAs into the electrode volume)
+                    scaling = 0.80;  % estimate for our default comp. domain, see eq. for el. potential in co-axial cables
+                else
+                    scaling = 1.0;
+                end
+
                 % check if the time domain results is available
                 timeDomainSolution = [outputPaths.HemiSimFolder,filesep,'Results', filesep, 'oss_time_result_PAM.h5'];
                 if ~isfile(timeDomainSolution) && ~settings.stimSetMode
@@ -236,14 +255,14 @@ for source_index = first_active_source:4
                 end
 
                 if settings.optimizer
-                    system(['python ', ea_getearoot, 'cleartune/PathwayTune/pam_optimizer.py ', settings.netblend_settings_file, ' ', ea_path_helper(outputPaths.outputDir), ' ', num2str(side), ' ', ea_path_helper(parameterFile_json)])
+                    system(['python ', ea_getearoot,'ext_libs',filesep,'PathwayTune',filesep,'pam_optimizer.py ', settings.netblend_settings_file, ' ', ea_path_helper(outputPaths.outputDir), ' ', num2str(side), ' ', ea_path_helper(parameterFile_json), ' ', num2str(scaling)])
                 else
                     if settings.prob_PAM
                         %system(['python ', ea_getearoot, 'ext_libs/OSS-DBS/Axon_Processing/PAM_caller.py ', neuron_folder, ' ', folder2save,' ', timeDomainSolution, ' ', pathwayParameterFile, ' ', num2str(scaling), ' ', num2str(i)]);
-                        system(['run_pathway_activation ', ea_path_helper(parameterFile_json), ' --scaling_index ', num2str(i)]);
+                        system(['run_pathway_activation ', ea_path_helper(parameterFile_json), ' --scaling_index ', num2str(i), ' --scaling ', num2str(scaling)]);
                     else
                         %system(['python ', ea_getearoot, 'ext_libs/OSS-DBS/Axon_Processing/PAM_caller.py ', neuron_folder, ' ', folder2save,' ', timeDomainSolution, ' ', pathwayParameterFile]);
-                        system(['run_pathway_activation ', ea_path_helper(parameterFile_json)]);
+                        system(['run_pathway_activation ', ea_path_helper(parameterFile_json), ' --scaling ', num2str(scaling)]);
                     end
                 end
 
@@ -260,7 +279,7 @@ for source_index = first_active_source:4
             continue;
         end
 
-        if settings.prob_PAM
+        if settings.prob_PAM && all(~multiSourceMode)
             % convert binary PAM status over uncertain parameter to "probabilistic activations"
             ea_get_probab_axon_state([outputPaths.HemiSimFolder,filesep,'Results'],1,strcmp(settings.butenko_intersectStatus,'activated'));
         end
@@ -269,19 +288,30 @@ for source_index = first_active_source:4
         if settings.outOfCore == 1
             ea_delete([outputPaths.HemiSimFolder, filesep, 'Results', filesep, 'oss_freq_domain_tmp_PAM.hdf5']);
         end
-    
+
         if isfile([outputPaths.HemiSimFolder, filesep, 'success_', sideCode, '.txt'])
             runStatusMultiSource(source_index,side+1) = 1;
             fprintf('\nOSS-DBS calculation succeeded!\n\n')
-    
+
             % prepare Lead-DBS BIDS format VATs
-            if settings.exportVAT
+            if settings.exportVAT && settings.optimizer
+                % get 4-D unit niftis for the optimizer and exit
+                ea_convert_ossdbs_StimSets_VTAs(settings,side,outputPaths)
+                ea_exit_genvat_butenko;
+            elseif settings.exportVAT
                 [stimparams(side+1).VAT.VAT,stimparams(side+1).volume,source_efields{side+1,source_use_index},source_vtas{side+1,source_use_index}] = ea_convert_ossdbs_VTAs(options,settings,side,multiSourceMode,source_use_index,outputPaths);
             end
 
+            if settings.prob_PAM && any(multiSourceMode)
+                % for multisource, we will convert in the external loop
+                % we just need to add the source index to the Axon States
+                axonStateFolder = ea_sourceIndex4AxonStates(outputPaths, side, source_use_index);
+                continue
+            end
+
             % prepare Lead-DBS BIDS format fiber activations
-            if settings.calcAxonActivation
-                ea_convert_ossdbs_axons(options,settings,side,settings.prob_PAM,resultfig,outputPaths,source_use_index)
+            if settings.calcAxonActivation && ~settings.optimizer
+                ea_convert_ossdbs_axons(options,settings,side,settings.prob_PAM,resultfig,outputPaths,source_use_index);
             end
 
         elseif isfile([outputPaths.HemiSimFolder, filesep, 'fail_', sideCode, '.txt'])
@@ -291,7 +321,7 @@ for source_index = first_active_source:4
             warning('on', 'backtrace');
             %runStatus(side+1) = 0;
         end
-   
+
     end
 
     % check only the first source for PAM
@@ -304,14 +334,19 @@ end
 
 % merge multisource VATs
 for side = 0:1
-    if multiSourceMode(side+1) && nActiveSources(1,side+1) > 0 && ~settings.calcAxonActivation 
+    if multiSourceMode(side+1) && nActiveSources(1,side+1) > 0 && ~settings.calcAxonActivation
         %stimparams = ea_postprocess_multisource(options,settings,side+1,source_efields,source_vtas,outputPaths);
         [vatfv,vatvolume] = ea_postprocess_multisource(options,settings,side+1,source_efields,source_vtas,outputPaths);
         stimparams(side+1).VAT.VAT = vatfv;
         stimparams(side+1).volume = vatvolume;
-    elseif multiSourceMode(side+1) && nActiveSources(1,side+1) > 0 && settings.calcAxonActivation 
+    elseif multiSourceMode(side+1) && nActiveSources(1,side+1) > 0 && settings.calcAxonActivation && ~settings.prob_PAM
         ea_postprocess_multisource_pam(options,settings,side+1)
     end
+end
+
+% special case for multisource probabilistic PAM
+if any(multiSourceMode) && settings.prob_PAM
+    ea_get_prob_fiber_states_for_multisource(options,settings,outputPaths,axonStateFolder,resultfig)
 end
 
 % unused sources are set to 1 above

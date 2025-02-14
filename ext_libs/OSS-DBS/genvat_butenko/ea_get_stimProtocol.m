@@ -10,7 +10,7 @@ arguments
     source_index    {mustBeNumeric} % index of the current source
 end
 
-conNum = options.elspec.numel;
+conNum = options.elspec.numContacts;
 settings.Activation_threshold_VTA = []; % initialize
 nActiveSources = [nnz(~isnan(activeSources(1,:))), nnz(~isnan(activeSources(2,:)))];
 if any(nActiveSources > 1)
@@ -62,6 +62,17 @@ if ~settings.stimSetMode
             elseif length_active_span > 18.0
                 ea_warndlg("Large span of active contacts is detected. Consider extending VAT grid, see PointModel.Lattice.Shape in lead_settings.py")
             end
+
+            C1_to_last_distance = norm(settings.contactLocation{side}(last_active,:) - settings.contactLocation{side}(1,:));
+            if C1_to_last_distance > 24.0 && length_active_span < 18.0
+                % OSS assumes straight electrodes building them from the first
+                % contact. So if active contacts are too distal, we need to
+                % imitate electrode shift.
+                % IMPORTANT: this trick only works if active contacts are
+                % not far away from each other!
+                settings = ea_elshift_oss(settings,side,first_active,last_active);
+            end
+
         elseif any(nActiveSources > 1)
             % enforce the settings value for all sources in multisource
             settings.Activation_threshold_VTA = [settings.Activation_threshold_VTA;options.prefs.machine.vatsettings.butenko_ethresh];
@@ -77,7 +88,25 @@ else
     settings.stim_center(2,:) = mean(settings.contactLocation{2});
     settings.Phi_vector = 1000./conNum * ones(2, conNum);
     settings.Case_grounding = 1;
-    settings.Activation_threshold_VTA = [-1;-1];
+    if settings.exportVAT
+        for side = 1:2
+            % Threshold for Astrom VTA (V/m)
+            if settings.adaptive_threshold
+                settings.Activation_threshold_VTA = [settings.Activation_threshold_VTA;ea_get_adaptiveEthreshold(settings.pulseWidth(side))];
+            else
+                % potentially buggy for multisource
+                if options.prefs.machine.vatsettings.butenko_ethresh < 1.0
+                    ea_warndlg("The E-threshold is too low (see OSS-DBS settings), likely wrong units are used, upscaling to V/m!")
+                    settings.Activation_threshold_VTA = [settings.Activation_threshold_VTA;options.prefs.machine.vatsettings.butenko_ethresh*1000.0];
+                else
+                    settings.Activation_threshold_VTA = [settings.Activation_threshold_VTA;options.prefs.machine.vatsettings.butenko_ethresh];
+                end
+            end
+        end
+    else
+        % not needed for PAM
+        settings.Activation_threshold_VTA = [-1;-1];
+    end
 end
 
 if settings.calcAxonActivation
@@ -91,7 +120,7 @@ end
 settings.Phi_vector_max = zeros(size(settings.Phi_vector));
 if settings.multisource && settings.calcAxonActivation
     for inx = 1:4
-        
+
         [Phi_vector, ~, ~] = ea_get_OneSourceStimVector(S, 2, conNum, activeSources(:,inx));
         Phi_vector(isnan(Phi_vector)) = 0;
 

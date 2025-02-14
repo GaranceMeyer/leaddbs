@@ -8,13 +8,13 @@ markers=varargin{1};
 options=varargin{2};
 
 if ischar(options) || isstring(options) % Electrode name provided
-    [elName, matfname] = ea_resolve_elspec;
     elmodel = char(options);
-    load(fullfile(ea_getearoot, 'templates', 'electrode_models' ,matfname{string(elName) == elmodel}));
-else % options struct provided
-    elmodel = options.elmodel;
-    load(fullfile(ea_getearoot, 'templates', 'electrode_models', options.elspec.matfname));
+    options = struct;
+    options.elmodel = elmodel;
+    options = ea_resolve_elspec(options);
 end
+
+load(fullfile(ea_getearoot, 'templates', 'electrode_models', options.elspec.matfname));
 
 if nargin>2
     resize=varargin{3};
@@ -30,7 +30,7 @@ for side=1:length(markers) %valid for unilateral support
         can_dist=ea_pdist([electrode.head_position;electrode.tail_position]);
         %emp_dist=ea_pdist([markers(side).head;markers(side).tail]);
         %A=squareform(pdist(electrode.coords_mm));
-        switch elmodel
+        switch options.elmodel
             case {'Medtronic B33005'
                   'Medtronic B33015'
                   'Boston Scientific Vercise Directed'
@@ -44,7 +44,8 @@ for side=1:length(markers) %valid for unilateral support
                 can_eldist=sum(sum(tril(triu(A,1),1)))/(3);
                 clear coords_temp
             case {'Boston Scientific Vercise Cartesia HX'
-                  'Boston Scientific Vercise Cartesia X'}
+                  'Boston Scientific Vercise Cartesia X'
+				  'Aleva directSTIM Directed'}
                 coords_temp(1,:) = mean(electrode.coords_mm(1:3,:));
                 coords_temp(2,:) = mean(electrode.coords_mm(4:6,:));
                 coords_temp(3,:) = mean(electrode.coords_mm(7:9,:));
@@ -54,7 +55,7 @@ for side=1:length(markers) %valid for unilateral support
                 clear coords_temp
             otherwise
                 A=sqrt(ea_sqdist(electrode.coords_mm',electrode.coords_mm'));
-                can_eldist=sum(sum(tril(triu(A,1),1)))/(electrode.numel-1);
+                can_eldist=sum(sum(tril(triu(A,1),1)))/(electrode.numContacts-1);
         end
         vec=(markers(side).tail-markers(side).head)/norm(markers(side).tail-markers(side).head);
         if nargin>3
@@ -63,6 +64,12 @@ for side=1:length(markers) %valid for unilateral support
             stretch=can_dist;
         end
         markers(side).tail=markers(side).head+vec*stretch;
+    end
+
+    if length(options.elspec.etageidx) > 8
+        scaleFactor = options.elspec.contact_span*1.5;
+    else
+        scaleFactor = options.elspec.contact_span*2;
     end
 
     if ~isempty(markers(side).head)
@@ -76,7 +83,7 @@ for side=1:length(markers) %valid for unilateral support
 
         offset = electrode.head_position(3);
         trajvector{side}=(markers(side).tail-markers(side).head)/norm(markers(side).tail-markers(side).head);
-        trajectory{side}=[markers(side).head-trajvector{side}*5;markers(side).head+trajvector{side}*25];
+        trajectory{side}=[markers(side).head-trajvector{side}*5;markers(side).head+trajvector{side}*scaleFactor];
         trajectory{side}=[linspace(trajectory{side}(1,1),trajectory{side}(2,1),50)',...
             linspace(trajectory{side}(1,2),trajectory{side}(2,2),50)',...
             linspace(trajectory{side}(1,3),trajectory{side}(2,3),50)'];

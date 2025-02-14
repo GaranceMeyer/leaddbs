@@ -11,7 +11,7 @@ end
 coords_mm = ea_load_reconstruction(options);
 settings.contactLocation = coords_mm;
 eleNum = length(coords_mm); % Number of electrodes
-conNum = options.elspec.numel; % Number of contacts per electrode
+conNum = options.elspec.numContacts; % Number of contacts per electrode
 
 % Save both native and MNI space y and head markers for OSS-DBS
 settings.yMarkerNative = nan(eleNum, 3);
@@ -52,11 +52,18 @@ for i=1:eleNum
             settings.Second_coordinate(i,:) = markersMNI(i).tail;
         end
     elseif ~isempty(coords_mm{i})
-        if contains(options.elmodel, 'DIXI D08')
+        if contains(options.elmodel, 'DIXI D08') || contains(options.elmodel, 'PMT 2102')
             settings.Second_coordinate(i,:) = coords_mm{i}(4,:);
         else
             settings.Second_coordinate(i,:) = coords_mm{i}(end,:);
         end
+    end
+
+    % disable X-axis implantations for directional leads
+    if all(settings.Implantation_coordinate(i,2:3) == settings.Second_coordinate(i,2:3))  && (contains(options.elmodel, "Medtronic B33015") || contains(options.elmodel, "Medtronic B33005") || contains(options.elmodel, "Boston Scientific Vercise Cartesia X") || contains(options.elmodel, "Boston Scientific Vercise Cartesia HX") || contains(options.elmodel, "Boston Scientific Vercise Directed") || contains(options.elmodel, "Abbott Directed 6172 (short)") || contains(options.elmodel, "Abbott Directed 6173 (long)"))
+        ea_error("Implantations perfectly along X-axis are not supported for directional leads.")
+        settings = 0;
+        return
     end
 end
 
@@ -72,7 +79,7 @@ function [markersNative, markersMNI] = ea_get_markers(options)
         warning('Failed to load native reconstruction!');
         warning('on', 'backtrace');
     end
-    
+
     options.native = 0;
     try
         [~, ~, markersMNI] = ea_load_reconstruction(options);

@@ -1,6 +1,7 @@
 function [vatlist,FilesExist] = ea_discfibers_getvats(obj)
 % Return list of VATs
 
+
 numPatient = length(obj.allpatients);
 vatlist = cell(numPatient*2,2);
 FilesExist = zeros(numPatient*2,2); % also check if mirrored fields exist
@@ -10,54 +11,59 @@ modelLabel = ea_simModel2Label(obj.M.vatmodel);
 disp('Construct VAT list...')
 for sub=1:numPatient
 
-    [~,subj_tag,~] = fileparts(obj.allpatients{sub});
-    subSimPrefix = [subj_tag, '_sim-'];
+    [~, subj_tag] = fileparts(obj.allpatients{sub});
 
     % Original VAT E-field
     stimFolder = [obj.allpatients{sub}, filesep, 'stimulations', filesep, ea_nt(0), 'gs_', obj.M.guid];
-    load([stimFolder, filesep, subj_tag, '_desc-stimparameters.mat'],'S');
-    
-    for side = 1:2
-    
-        % if no stimulation, we do not expect the file to exist
-        % so no re-simulation is needed
-        if all(S.amplitude{1,side} == 0)
-            FilesExist(sub,side) = 1;
-            vatlist{sub,side} = 'skip';
+    stimParams = [stimFolder, filesep, subj_tag, '_desc-stimparameters.mat'];
 
-            % also mark mirrored
-            if side == 1
-                vatlist{sub+numPatient,2} = 'skip';
-                FilesExist(sub+numPatient,2) = 1;
-            else
-                vatlist{sub+numPatient,1} = 'skip';
-                FilesExist(sub+numPatient,1) = 1;
-            end
+    if ~isfile(stimParams)
+        FilesExist([sub,sub+numPatient], :) = ones(2);
+        ea_cprintf('CmdWinWarnings', 'Stimulation parameters not found! Skip checking stimulation/vta existence.\n');
+        return
+    else
+        S = ea_loadstimulation(stimParams);
 
-            disp(subj_tag)
-            disp(side)
+        for side = 1:2
+            % if no stimulation, we do not expect the file to exist
+            % so no re-simulation is needed
+            if all(S.amplitude{1,side} == 0)
+                FilesExist(sub,side) = 1;
+                vatlist{sub,side} = 'skip';
 
-            continue
-        else
-            if side == 1
-                BIDS_side = 'R';
-            else
-                BIDS_side = 'L';
-            end
-
-            try
-                vatlist(sub,side) = ea_regexpdir(stimFolder, ['sim-efield_model-',modelLabel,'_hemi-',BIDS_side,'.nii'], 0);
-                FilesExist(sub,side)=1;
-            catch
+                % also mark mirrored
                 if side == 1
-                    ea_cprintf('CmdWinWarnings', 'Right side VTA doesn''t exist under stimulation folder:\n%s\n\n', stimFolder);
+                    vatlist{sub+numPatient,2} = 'skip';
+                    FilesExist(sub+numPatient,2) = 1;
                 else
-                    ea_cprintf('CmdWinWarnings', 'Left side VTA doesn''t exist under stimulation folder:\n%s\n\n', stimFolder);
+                    vatlist{sub+numPatient,1} = 'skip';
+                    FilesExist(sub+numPatient,1) = 1;
                 end
-                vatlist(sub,side) = {''};
-                FilesExist(sub,sude)=0;
-            end
 
+                disp(subj_tag)
+                disp(side)
+
+                continue
+            else
+                if side == 1
+                    BIDS_side = 'R';
+                else
+                    BIDS_side = 'L';
+                end
+
+                try
+                    vatlist(sub,side) = ea_regexpdir(stimFolder, ['sim-efield_model-',modelLabel,'_hemi-',BIDS_side,'.nii'], 0);
+                    FilesExist(sub,side)=1;
+                catch
+                    if side == 1
+                        ea_cprintf('CmdWinWarnings', 'Right side VTA doesn''t exist under stimulation folder:\n%s\n\n', stimFolder);
+                    else
+                        ea_cprintf('CmdWinWarnings', 'Left side VTA doesn''t exist under stimulation folder:\n%s\n\n', stimFolder);
+                    end
+                    vatlist(sub,side) = {''};
+                    FilesExist(sub,side)=0;
+                end
+            end
         end
     end
 
@@ -83,7 +89,6 @@ for sub=1:numPatient
         end
         %FilesExist(numPatient+sub, 2)=0;
     end
-
-
 end
+
 FilesExist=double(logical(FilesExist)); % convert to zeros and ones.
