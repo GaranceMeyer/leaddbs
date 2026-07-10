@@ -46,6 +46,7 @@ classdef ea_unifiedmapping < handle
         vizmode
         smooth_fp = 0; %for networkmapping, smooth fingerprints
         normalize_fp = 0; %for networkmapping, normalize fingerprints
+        mask_vta_fp = 0; %for networkmapping, remove VTA voxels from fingerprints
         cvmask = 'Gray Matter';
         model='Smoothed'; %for networkmapping
         drawobject = struct % actual streamtube handle
@@ -106,6 +107,7 @@ classdef ea_unifiedmapping < handle
         negBaseColor = [1,1,1] % negative main color
         negcolor = [0.2824,0.6157,0.9725] % negative peak color
         hasResults = false; % results check
+        AdditionalSettingsSavePath = [];
       
     end 
 
@@ -175,6 +177,7 @@ classdef ea_unifiedmapping < handle
             obj.model = 'Smoothed';
             obj.smooth_fp = 0;
             obj.normalize_fp = 0;
+            obj.mask_vta_fp = 0;
             obj.cvmask = 'Gray Matter';
             obj.fileformatversion=1.2; % new current version with settings to harmonize stats.
             datapath = GetFullPath(datapath);
@@ -203,13 +206,18 @@ classdef ea_unifiedmapping < handle
                     end
                     obj.M.patient.group=obj.M.ROI.group; % copies
                 else
+                    datasetFolder = regexp(obj.leadgroup, ['(.*)(?=\', filesep, 'derivatives\', filesep, 'leadgroup)'], 'match', 'once');
+                    for i = 1:size(obj.M.patient.list,1)
+                        patient_tag = regexp(obj.M.patient.list{i}, '[^\\/]+$', 'match', 'once');
+                        obj.M.patient.list{i} = fullfile(datasetFolder, 'derivatives', 'leaddbs', patient_tag);
+                    end
                     obj.allpatients = obj.M.patient.list;
                     obj.patientselection = obj.M.ui.listselect;
                 end
                 obj.responsevar = obj.M.clinical.vars{1};
                 obj.responsevarlabel = obj.M.clinical.labels{1};
                 
-            elseif  isfield(U, explorer)  % Saved explorer class loaded
+            elseif  isfield(U, 'explorer')  % Saved explorer class loaded
                 props = properties(U.explorer);
                 for p =  1:length(props) %copy all public properties
                     if ~(strcmp(props{p}, 'analysispath') && ~isempty(obj.analysispath) ...
@@ -223,6 +231,7 @@ classdef ea_unifiedmapping < handle
                 return
             end
 
+            obj.repair_loaded_explorer;
             obj.compat_statmetric; % check and resolve for old statmetric code (which used to be integers)
 
             addlistener(obj,'activateby','PostSet',@activatebychange);
@@ -236,6 +245,13 @@ classdef ea_unifiedmapping < handle
         end
 
         function compat_statmetric(obj)
+        
+            if isempty(obj.statmetric) || ...
+                    (isnumeric(obj.statmetric) && ~isscalar(obj.statmetric)) || ...
+                    iscell(obj.statmetric)
+                return
+            end
+
             if ~ischar(obj.statmetric) % old language used:
                 switch obj.statmetric % 3 was never used
                     case 1
@@ -263,7 +279,7 @@ classdef ea_unifiedmapping < handle
         function calculate(obj)
             % check that this has not been calculated before:
             %first store the rois for automatic calculations
-            if ~isfield(obj.results,'roi')
+            if ~isfield(obj.results,'roi') && ~(obj.calcsettings.connectivity_type == 2)
                 if isfield(obj.M,'pseudoM')
                     vatlist = obj.M.ROI.list;
                 else
@@ -400,9 +416,14 @@ classdef ea_unifiedmapping < handle
                     vatlist = ea_unified_nm_getvats(obj); 
                 end
                 %TODO:I have removed this from the networkmapping explorer folder and added it to the unified mapping explorer. Please adjust based on the future of the tool. I refrained from making a copy since the name of this script makes sense and would be redundant to change the name
-                [AllX] = ea_unified_nm_calcvals(vatlist, obj.calcsettings.netmap_connectome);
+                [AllX, AllXVTAMasked] = ea_unified_nm_calcvals(vatlist, obj.calcsettings.netmap_connectome, obj.mask_vta_fp);
 
                 obj.results.networkmapping.(ea_unifiedmapping_conn2connid(obj.calcsettings.netmap_connectome)).connval = AllX;
+                if ~isempty(AllXVTAMasked)
+                    obj.results.networkmapping.(ea_unifiedmapping_conn2connid(obj.calcsettings.netmap_connectome)).connval_vtamasked = AllXVTAMasked;
+                elseif obj.mask_vta_fp
+                    obj.mask_vta_fp = 0;
+                end
 
                 % Functional connectome, add spacedef to results
                 if contains(obj.calcsettings.netmap_connectome, ' > ')
@@ -501,7 +522,9 @@ classdef ea_unifiedmapping < handle
             connid = (ea_unifiedmapping_conn2connid(obj.calcsettings.fibfilt_connectome));
             [pamlist,~] = ea_unifiedmapping_getpams(obj);
             [fibsvalBin, fibsvalprob,~, ~, ~, fibcell_pam, connFiberInd, totalFibers] = ea_unifiedmapping_calcvals_pam_prob(pamlist, obj, cfile);
+
             obj.results.fiberfiltering.(connid).('PAM_probA').fibsval = fibsvalprob;
+            obj.results.fiberfiltering.(connid).('PAM_Ttest').fibsval = fibsvalBin;
             obj.results.fiberfiltering.(connid).connFiberInd_PAM = connFiberInd;
             obj.results.fiberfiltering.(connid).totalFibers = totalFibers; % total number of fibers in the connectome to work with global indices
             obj.results.fiberfiltering.(connid).('pam_fibers').fibcell= fibcell_pam;
@@ -766,6 +789,203 @@ classdef ea_unifiedmapping < handle
             U = load(obj.leadgroup);
             obj.M = U.M;
             obj.allpatients=obj.M.patient.list;
+            obj.repair_loaded_explorer;
+        end
+
+        function repair_loaded_explorer(obj)
+            % Fill fields that older/shared .explorer files may not carry.
+            if isempty(obj.statmetric)
+                obj.statmetric = nan;
+            end
+            if isempty(obj.statsettings) || ~isstruct(obj.statsettings)
+                obj.statsettings = struct;
+            end
+            if ~isfield(obj.statsettings,'doVoxels') || isempty(obj.statsettings.doVoxels)
+                obj.statsettings.doVoxels = 1;
+            end
+            if ~isfield(obj.statsettings,'doFibers') || isempty(obj.statsettings.doFibers)
+                obj.statsettings.doFibers = 1;
+            end
+            if ~isfield(obj.statsettings,'outcometype') || isempty(obj.statsettings.outcometype)
+                obj.statsettings.outcometype = 'gradual';
+            end
+            if ~isfield(obj.statsettings,'stimulationmodel') || isempty(obj.statsettings.stimulationmodel)
+                obj.statsettings.stimulationmodel = 'Electric Field';
+            end
+            if ~isfield(obj.statsettings,'efieldmetric') || isempty(obj.statsettings.efieldmetric)
+                obj.statsettings.efieldmetric = 'Sum';
+            end
+            if ~isfield(obj.statsettings,'efieldthreshold') || isempty(obj.statsettings.efieldthreshold)
+                obj.statsettings.efieldthreshold = 200;
+            end
+            if ~isfield(obj.statsettings,'nanthreshold') || isempty(obj.statsettings.nanthreshold)
+                obj.statsettings.nanthreshold = 0;
+            end
+            if ~isfield(obj.statsettings,'sweetspotresolution') || isempty(obj.statsettings.sweetspotresolution)
+                obj.statsettings.sweetspotresolution = 0.5;
+            end
+            if ~isfield(obj.statsettings,'connthreshold') || isempty(obj.statsettings.connthreshold)
+                obj.statsettings.connthreshold = 20;
+            end
+            if ~isfield(obj.statsettings,'statfamily') || isempty(obj.statsettings.statfamily)
+                obj.statsettings.statfamily = 'Correlations';
+            end
+            if ~isfield(obj.statsettings,'stattest') || isempty(obj.statsettings.stattest)
+                obj.statsettings.stattest = 'Spearman';
+            end
+            if ~isfield(obj.statsettings,'H0') || isempty(obj.statsettings.H0)
+                obj.statsettings.H0 = 'Average';
+            end
+
+            if isempty(obj.calcsettings) || ~isstruct(obj.calcsettings)
+                obj.calcsettings = struct;
+            end
+            if ~isfield(obj.calcsettings,'selectedTool') || isempty(obj.calcsettings.selectedTool)
+                obj.calcsettings.selectedTool = 1;
+            end
+            if ~isfield(obj.calcsettings,'calcthreshold') || isempty(obj.calcsettings.calcthreshold)
+                obj.calcsettings.calcthreshold = 100;
+            end
+            if ~isfield(obj.calcsettings,'switch_connectivity') || isempty(obj.calcsettings.switch_connectivity)
+                obj.calcsettings.switch_connectivity = 1;
+            end
+            if ~isfield(obj.calcsettings,'connectivity_type') || isempty(obj.calcsettings.connectivity_type)
+                obj.calcsettings.connectivity_type = 1;
+            end
+            if ~isfield(obj.calcsettings,'functionalresolution') || isempty(obj.calcsettings.functionalresolution)
+                obj.calcsettings.functionalresolution = '2 mm';
+            end
+            if ~isfield(obj.calcsettings,'structuralresolution') || isempty(obj.calcsettings.structuralresolution)
+                obj.calcsettings.structuralresolution = '2 mm';
+            end
+            if ~isfield(obj.calcsettings,'calcmethod') || isempty(obj.calcsettings.calcmethod)
+                obj.calcsettings.calcmethod = 1;
+            end
+            if ~isfield(obj.calcsettings,'calcspace') || isempty(obj.calcsettings.calcspace)
+                obj.calcsettings.calcspace = 1;
+            end
+            if ~isfield(obj.calcsettings,'netmap_connectome') || isempty(obj.calcsettings.netmap_connectome)
+                obj.calcsettings.netmap_connectome = '';
+            end
+            if ~isfield(obj.calcsettings,'fibfilt_connectome') || isempty(obj.calcsettings.fibfilt_connectome)
+                obj.calcsettings.fibfilt_connectome = '';
+            end
+            if ~isfield(obj.calcsettings,'multi_pathways') || isempty(obj.calcsettings.multi_pathways)
+                obj.calcsettings.multi_pathways = 0;
+            end
+
+            if isempty(obj.subscore) || ~isstruct(obj.subscore)
+                obj.subscore = struct;
+            end
+            if ~isfield(obj.subscore,'vars') || isempty(obj.subscore.vars)
+                obj.subscore.vars = {};
+            end
+            if ~isfield(obj.subscore,'labels') || isempty(obj.subscore.labels)
+                obj.subscore.labels = {};
+            end
+            if ~isfield(obj.subscore,'pcavars') || isempty(obj.subscore.pcavars)
+                obj.subscore.pcavars = {};
+            end
+            if ~isfield(obj.subscore,'weights') || isempty(obj.subscore.weights)
+                obj.subscore.weights = [];
+            end
+            if ~isfield(obj.subscore,'colors') || isempty(obj.subscore.colors)
+                obj.subscore.colors{1,1} = ea_color_wes('all');
+                obj.subscore.colors{1,2} = flip(ea_color_wes('all'));
+            end
+            if ~isfield(obj.subscore,'vis') || isempty(obj.subscore.vis)
+                obj.subscore.vis = struct;
+            end
+            if ~isfield(obj.subscore.vis,'showposamount') || isempty(obj.subscore.vis.showposamount)
+                obj.subscore.vis.showposamount = repmat([25,25],10,1);
+            end
+            if ~isfield(obj.subscore.vis,'shownegamount') || isempty(obj.subscore.vis.shownegamount)
+                obj.subscore.vis.shownegamount = repmat([25,25],10,1);
+            end
+            if ~isfield(obj.subscore.vis,'pos_shown') || isempty(obj.subscore.vis.pos_shown)
+                obj.subscore.vis.pos_shown = repmat([0,0],10,1);
+            end
+            if ~isfield(obj.subscore.vis,'neg_shown') || isempty(obj.subscore.vis.neg_shown)
+                obj.subscore.vis.neg_shown = repmat([0,0],10,1);
+            end
+            if ~isfield(obj.subscore,'negvisible') || isempty(obj.subscore.negvisible)
+                obj.subscore.negvisible = zeros(10,1);
+            end
+            if ~isfield(obj.subscore,'posvisible') || isempty(obj.subscore.posvisible)
+                obj.subscore.posvisible = ones(10,1);
+            end
+            if ~isfield(obj.subscore,'splitbysubscore') || isempty(obj.subscore.splitbysubscore)
+                obj.subscore.splitbysubscore = 0;
+            end
+            if ~isfield(obj.subscore,'special_case') || isempty(obj.subscore.special_case)
+                obj.subscore.special_case = 0;
+            end
+
+            if isempty(obj.activated) || ~isstruct(obj.activated)
+                obj.activated = struct;
+            end
+            if ~isfield(obj.activated,'sweetspotmapping')
+                obj.activated.sweetspotmapping = 'Off';
+            end
+            if ~isfield(obj.activated,'fiberfiltering')
+                obj.activated.fiberfiltering = 'Off';
+            end
+            if ~isfield(obj.activated,'networkmapping')
+                obj.activated.networkmapping = 'Off';
+            end
+
+            if isempty(obj.NMviz) || ~isstruct(obj.NMviz)
+                obj.NMviz = struct;
+            end
+            if ~isfield(obj.NMviz,'modelRH') || isempty(obj.NMviz.modelRH)
+                obj.NMviz.modelRH = 1;
+            end
+            if ~isfield(obj.NMviz,'modelLH') || isempty(obj.NMviz.modelLH)
+                obj.NMviz.modelLH = 1;
+            end
+            if isempty(obj.vizmode)
+                obj.vizmode = 'Regions';
+            end
+            if isempty(obj.model)
+                obj.model = 'Smoothed';
+            end
+            if ~iscell(obj.drawvals)
+                obj.drawvals = {};
+            end
+
+            hasM = isstruct(obj.M);
+
+            if isempty(obj.patientselection) && hasM
+                if isfield(obj.M,'ui') && isfield(obj.M.ui,'listselect') && ~isempty(obj.M.ui.listselect)
+                    obj.patientselection = obj.M.ui.listselect;
+                elseif isfield(obj.M,'patient') && isfield(obj.M.patient,'list')
+                    obj.patientselection = 1:numel(obj.M.patient.list);
+                elseif isfield(obj.M,'ROI') && isfield(obj.M.ROI,'list')
+                    obj.patientselection = 1:size(obj.M.ROI.list,1);
+                end
+            end
+
+            if isempty(obj.allpatients) && hasM
+                if isfield(obj.M,'patient') && isfield(obj.M.patient,'list')
+                    obj.allpatients = obj.M.patient.list;
+                elseif isfield(obj.M,'ROI') && isfield(obj.M.ROI,'list')
+                    obj.allpatients = obj.M.ROI.list;
+                end
+            end
+
+            if hasM && isfield(obj.M,'clinical') && isfield(obj.M.clinical,'labels') && ...
+                    isfield(obj.M.clinical,'vars') && ~isempty(obj.M.clinical.labels)
+                labels = obj.M.clinical.labels;
+                if isempty(obj.responsevarlabel) || ...
+                        ~(ischar(obj.responsevarlabel) || isstring(obj.responsevarlabel)) || ...
+                        ~ismember(obj.responsevarlabel, labels)
+                    obj.responsevarlabel = labels{1};
+                end
+                [isVar, ix] = ismember(obj.responsevarlabel, labels);
+                if (isempty(obj.responsevar) || ~isVar) && isVar
+                    obj.responsevar = obj.M.clinical.vars{ix};
+                end
+            end
         end
 
         function coh = getcohortregressor(obj)
@@ -1426,11 +1646,16 @@ classdef ea_unifiedmapping < handle
         end
 
         function save(obj, saveas)
+            obj.repair_loaded_explorer;
+
             % Create a temporary object with only the required fields
             
             % Get all properties of the object
             explorer = ea_unifiedmapping;
-            Incprops = {'results','calcsettings','statsettings','leadgroup','ID','M'};
+            Incprops = {'results','calcsettings','statsettings','leadgroup','ID','M', ...
+                'subscore','responsevar','responsevarlabel','patientselection', ...
+                'allpatients','activated','multitractmode','posvisible','negvisible', ...
+                'showposamount','shownegamount','NMviz','vizmode','model'};
             for i = 1:length(Incprops)
                explorer.(Incprops{i}) = obj.(Incprops{i});
             end
@@ -1513,7 +1738,37 @@ classdef ea_unifiedmapping < handle
             if ~isfolder(DBSMappingfolder)
                 ea_mkdir(DBSMappingfolder)
             end
-            jsonPath=[DBSMappingfolder,filesep,'Settings-',obj.ID,'_conn-',conn_val,'.json'];
+
+            % check for custom save path
+            if isprop(obj, 'AdditionalSettingsSavePath') && ...
+                    ~isempty(obj.AdditionalSettingsSavePath)
+                customPath = obj.AdditionalSettingsSavePath;
+                % enforce .json extension
+                [folder, name, ext] = fileparts(customPath);
+                name = ['Settings-', name];
+                if isempty(ext)
+                    ext = '.json';
+                end
+            
+                if ~strcmpi(ext, '.json')
+                    error('AdditionalSettingsSavePath must point to a .json file');
+                end
+
+                % if no folder provided, use DBSMappingfolder
+                if isempty(folder)
+                    folder = DBSMappingfolder;
+                end
+            
+                jsonPath = fullfile(folder, [name ext]);
+            
+            else
+                % default behavior
+                jsonPath = fullfile(DBSMappingfolder, ...
+                    ['Settings-', obj.ID, '.json']);
+            end
+
+            % jsonPath=[DBSMappingfolder,filesep,'Settings-',obj.ID,'_conn-',conn_val,'.json'];
+            % 
             % Write JSON to a file
             fileID = fopen(jsonPath, 'w');
             if fileID == -1
@@ -1553,6 +1808,7 @@ classdef ea_unifiedmapping < handle
         end
 
         function draw(obj)
+            obj.repair_loaded_explorer;
             
             if ~isfield(obj.activated,'sweetspotmapping')
                 obj.activated.sweetspotmapping='Off';
@@ -1625,6 +1881,20 @@ classdef ea_unifiedmapping < handle
         end
     end
     methods (Static)
+        function obj = loadobj(obj)
+            if isstruct(obj)
+                saved = obj;
+                obj = ea_unifiedmapping;
+                fields = fieldnames(saved);
+                for f = 1:numel(fields)
+                    if isprop(obj, fields{f})
+                        obj.(fields{f}) = saved.(fields{f});
+                    end
+                end
+            end
+            obj.repair_loaded_explorer;
+        end
+
         function changeevent(~,event)
             update_trajectory(event.AffectedObject,event.Source.Name);
         end
@@ -1743,4 +2013,3 @@ for id=idx'
 end
 fibers=[fibers,idxv];
 end
-

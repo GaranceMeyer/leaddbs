@@ -8,12 +8,6 @@ arguments
     S       % Lead-dbs stimulation settings
 end
 
-% Check OSS-DBS installation, set env
-if (~isfield(options.prefs,'ext_oss_env') || strcmp(options.prefs.ext_oss_env,'None')) && (~isfield(options.prefs,'use_wsl') || ~options.prefs.use_wsl)
-    env = ea_conda_env('OSS-DBSv2');
-    ea_checkOSSDBSInstallv2(env);
-end
-
 % Double check if lead is supported by OSS-DBS.
 if ~ismember(options.elmodel, ea_ossdbs_elmodel)
     ea_error([options.elmodel, 'is not supported by OSS-DBS yet!'], simpleStack = 1);
@@ -37,6 +31,8 @@ if ~isfield(options.prefs.machine.vatsettings,'butenko_cond_model')
     settings.cond_model = 'ColeCole4';
 elseif strcmp(options.prefs.machine.vatsettings.butenko_cond_model,'Homogeneous')
     settings.cond_model = 'Constant';
+    % to avoid CSF filtering altogether
+    settings.butenko_segmAlg = 'Atlas Based';
 else
     settings.cond_model = options.prefs.machine.vatsettings.butenko_cond_model;
 end
@@ -99,7 +95,8 @@ if settings.optimizer || settings.trainANN
     settings.stimSetMode = 1; % OSS-DBS will solve a "unit" problem
 end
 
-if (settings.optimizer || settings.trainANN || settings.stimSetMode) && strcmp(settings.butenko_intersectStatus,'activated_at_active_contacts')
+if (settings.optimizer || settings.trainANN) && strcmp(settings.butenko_intersectStatus,'activated_at_active_contacts')
+      % this settings does not affect optimizer (works on the pathway level, use info from Pathways_status_*.jsons)
     ea_error("Option 'Activated near active contacts' is not supported for StimSet mode")
 end
 
@@ -113,31 +110,49 @@ end
 settings.Patient_folder = options.subj.subjDir;
 settings.Electrode_type = options.elmodel;
 
-% From Preferences File
+% Check OSS-DBS installation, set env
 if isfield(options.prefs,'use_wsl') && options.prefs.use_wsl
     disp("Running OSS-DBS via WSL")
     disp("Lead-DBS conda packages cannot be used (e.g. SynthSeg and Tensorflow)")
     settings.use_wsl = true;
+    settings.use_binaries = false;
     env = NaN; % wsl calls prefs.ext_oss_env directly
     if strcmp(settings.butenko_segmAlg,'SynthSeg')
         warningMsg = sprintf("SynthSeg segmentation cannot be used with WSL");
         ea_warndlg(warningMsg);
         settings = false;
         return
-    elseif settings.optimizer
-        warningMsg = sprintf("Optimizer cannot be currently used with WSL");
+    elseif settings.optimizer && settings.calcAxonActivation
+        warningMsg = sprintf("PAM Optimizer cannot be currently used with WSL");
+        ea_warndlg(warningMsg);
+        settings = false;
+        return
+    end
+elseif  isfield(options.prefs, 'oss_bin_path') && ~strcmp(options.prefs.oss_bin_path,'None')
+    disp("Running pre-compiled OSS-DBS")
+    settings.use_wsl = false;
+    settings.use_binaries = true;
+    disp("Lead-DBS conda packages might not be available (e.g. SynthSeg and Tensorflow)")   
+    env = NaN; % wsl calls prefs.ext_oss_env directly
+    % if strcmp(settings.butenko_segmAlg,'SynthSeg')
+    %     [varargout{1}, varargout{2}] = ea_exit_genvat_butenko();
+    % return
+    if settings.optimizer && settings.calcAxonActivation
+        warningMsg = sprintf("PAM Optimizer cannot be currently used with pre-compiled OSS-DBS");
         ea_warndlg(warningMsg);
         settings = false;
         return
     end
 else
     settings.use_wsl = false;
+    settings.use_binaries = false;
     if isfield(options.prefs,'ext_oss_env') && ~strcmp(options.prefs.ext_oss_env,'None')
         % use external environment
         env = ea_ext_env(options.prefs.ext_oss_env);
         disp("Using the external OSS-DBS environment")
     else
         env = ea_conda_env('OSS-DBSv2');
+        ea_checkOSSDBSInstallv2(env)
     end
 end
 
