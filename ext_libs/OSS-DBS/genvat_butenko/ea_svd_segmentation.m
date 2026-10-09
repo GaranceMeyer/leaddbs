@@ -59,6 +59,9 @@ if strcmp(anchorImage(end-2:end),'.gz')
     % SPM does not handle .gz
     gunzip(anchorImage);
     anchorNii = [anchorImage(1:end-3)];
+    % for clean-up
+    images2remove{1,1} = anchorNii;
+    cnt_rem = 2;
 else
     anchorNii = anchorImage;
 end
@@ -74,6 +77,8 @@ if coregister
                 % SPM does not handle .gz
                 gunzip(image);
                 image = [image(1:end-3)];
+                images2remove{cnt_rem,1} = image;
+                cnt_rem = cnt_rem + 1;
             end
 
             if ~strcmp(image,anchorImage)
@@ -462,8 +467,15 @@ function [segmask_nifti,synth_fn] = get_SynthSeg_segmask(workingDir,image2segmen
     %     gunzip(anchorImage);
     %     anchorNii = [anchorImage(1:end-3)];
     % end
-    ea_conformspaceto(anchorNii,segmaskFile)
+    ea_conformspaceto(anchorNii,segmaskFile,0)
     segmask_nifti = ea_load_nii(segmaskFile);
+end
+
+% always clean-up gunzipped files (if they were gzipped originally)
+if strcmp(anchorImage(end-2:end),'.gz') && coregister
+    for i = 1:size(images2remove,1)
+        ea_delete(images2remove{i,1});
+    end
 end
 
 if only_segmask
@@ -477,9 +489,9 @@ if only_segmask
     ea_delete(segcsvdDir)
     ea_delete([workingDir,filesep,'spm_affine_*'])
 
-    if strcmp(anchorImage(end-2:end),'.gz')
-        ea_delete(anchorNii);
-    end
+    % if strcmp(anchorImage(end-2:end),'.gz')
+    %     ea_delete(anchorNii);
+    % end
 end
 
 end
